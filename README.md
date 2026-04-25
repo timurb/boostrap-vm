@@ -1,29 +1,26 @@
 # Remote Rails + Docker + Codex on VM
 
-Этот набор файлов нужен для простого сценария:
+Этот набор файлов нужен для простого provider-agnostic сценария:
 
-- у тебя есть Linux VM
-- на ней один раз выполняется `bootstrap.sh`
-- рабочее окружение живёт на VM
+- у тебя есть Ubuntu/Linux VM
+- VM запускается вручную через web UI хостинга
+- на VM один раз выполняется `bootstrap.sh`
+- рабочее окружение живет на VM
 - локально на Mac ты подключаешься через VS Code Remote-SSH и/или Codex app Remote connections
-- VM можно запускать и останавливать через `serveroid_vm.py`, не заходя в UI
+- сама VM может автоматически выключаться после простоя локальными средствами Linux
+
+Здесь нет привязки к API конкретного хостинга. Если позже VM переедет к другому провайдеру, workflow останется тем же.
 
 ---
 
-## Что уже есть
+## Что есть в репозитории
 
-У тебя уже сохранены:
-
-- `bootstrap.sh` — первичная настройка VM
-- `serveroid_vm.py` — маленький Python CLI для запуска/остановки VM через API Serveroid
-
-В этом комплекте ниже:
-
-- `README.md` — инструкция
-- `requirements.txt` — Python-зависимости для `serveroid_vm.py`
-- `.env.example` — шаблон переменных окружения для Serveroid API
-- `Makefile` — удобные команды-ярлыки
-- `.gitignore` — чтобы не коммитить секреты
+- `bootstrap.sh` - первичная настройка Ubuntu VM для Rails/Docker/Codex remote development
+- `vm_auto_poweroff.sh` - проверка активности и локальное выключение VM после простоя
+- `install_vm_auto_poweroff.sh` - установка авто-выключателя как systemd timer
+- `vm-auto-poweroff.service` и `vm-auto-poweroff.timer` - systemd units для регулярной проверки
+- `README.md` - инструкция
+- `.gitignore` - локальные секреты и временные файлы
 
 ---
 
@@ -38,23 +35,29 @@
 - Rails app
 - PostgreSQL / Redis / Sidekiq / другие сервисы в контейнерах
 - Codex CLI
+- `vm-auto-poweroff` timer, который выключает VM после простоя
 
 ### На локальном Mac
 
 Локально используются:
 
+- web UI хостинга для запуска VM
 - VS Code + Remote-SSH
 - Dev Containers, если проект использует `.devcontainer`
 - Codex app с remote connections
-- `serveroid_vm.py` для запуска/остановки VM
+- обычный SSH / terminal workflow при необходимости
 
-Идея простая: **всё тяжёлое крутится на VM, а ноутбук — только клиент**.
+Идея простая: **все тяжелое крутится на VM, а ноутбук - только клиент**.
 
 ---
 
 ## 2. Быстрый запуск с нуля
 
-### Шаг 1. Подготовить VM
+### Шаг 1. Запустить VM
+
+Открой web UI хостинга и запусти VM вручную.
+
+### Шаг 2. Подготовить VM
 
 Скопируй `bootstrap.sh` на сервер и запусти:
 
@@ -72,96 +75,129 @@ node --version
 git --version
 ```
 
-Если это работает — хост готов.
+Если это работает - хост готов.
 
----
+### Шаг 3. Установить авто-выключение
 
-### Шаг 2. Настроить доступ к Serveroid API
-
-Создай файл `.env` рядом с `serveroid_vm.py` на основе `.env.example`.
-
-Минимально нужны:
-
-```env
-SERVEROID_CLIENT_ID=...
-SERVEROID_API_KEY=...
-SERVEROID_TENANT_ID=...
-SERVEROID_VM_ID=...
-```
-
-Если `VM_ID` не знаешь, можно сначала получить список VM.
-
----
-
-### Шаг 3. Установить локально Python-зависимости
-
-Рекомендуется отдельное виртуальное окружение:
+Скопируй файлы авто-выключателя на VM и выполни из папки репозитория:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+sudo ./install_vm_auto_poweroff.sh
 ```
 
----
+Installer:
 
-### Шаг 4. Проверить работу управления VM
+- копирует `vm_auto_poweroff.sh` в `/usr/local/sbin/vm-auto-poweroff`
+- создает `/etc/default/vm-auto-poweroff`
+- устанавливает `vm-auto-poweroff.service`
+- включает `vm-auto-poweroff.timer`
 
-```bash
-python serveroid_vm.py list
-python serveroid_vm.py info
-python serveroid_vm.py status
-```
-
-Запуск:
-
-```bash
-python serveroid_vm.py start
-```
-
-Остановка:
-
-```bash
-python serveroid_vm.py stop
-```
-
-Жёсткое выключение:
-
-```bash
-python serveroid_vm.py poweroff
-```
+По умолчанию VM выключается после 30 минут без активности. Проверка запускается каждые 5 минут.
 
 ---
 
 ## 3. Повседневный цикл работы
 
-Утром / перед началом работы:
+1. Запусти VM через web UI хостинга.
+2. Подключись к серверу через VS Code Remote-SSH, Codex app remote connection или обычный SSH.
+3. Работай в проекте на VM.
+4. Когда закончишь, просто отключись от VM.
+5. Через 30 минут без активности VM выполнит локальный `systemctl poweroff`.
 
-```bash
-python serveroid_vm.py start
+Авто-выключение не использует API хостинга. Оно работает изнутри VM и выключает ОС штатной Linux-командой.
+
+---
+
+## 4. Как авто-выключатель понимает активность
+
+VM считается занятой, если есть хотя бы один из сигналов:
+
+- активная login/SSH-сессия
+- живое SSH-подключение на порт из `SSH_PORTS` с точки зрения `ss`
+- CPU VM выше `CPU_BUSY_PERCENT`
+- суммарная Docker CPU-нагрузка выше `DOCKER_BUSY_PERCENT`
+- найден активный build/package/process из `BUSY_PROCESS_REGEX`
+
+Если VM занята, скрипт обновляет timestamp в:
+
+```text
+/var/lib/vm-auto-poweroff/last_busy
 ```
 
-Потом подключаешься к серверу как тебе удобно:
-
-- VS Code Remote-SSH
-- Codex app Remote connections
-- обычный SSH / terminal workflow
-
-В конце дня:
+Если VM не занята, скрипт сравнивает текущее время с этим timestamp. После `IDLE_MINUTES` минут простоя он выполняет:
 
 ```bash
-python serveroid_vm.py stop
-```
-
-Если VM зависла или не отвечает на мягкое выключение:
-
-```bash
-python serveroid_vm.py poweroff
+systemctl poweroff
 ```
 
 ---
 
-## 4. VS Code: как открыть проект на сервере
+## 5. Настройки авто-выключения
+
+Основные настройки живут в:
+
+```text
+/etc/default/vm-auto-poweroff
+```
+
+Значения по умолчанию:
+
+```bash
+IDLE_MINUTES=30
+CHECK_INTERVAL_SECONDS=300
+DRY_RUN=0
+CPU_BUSY_PERCENT=20
+DOCKER_BUSY_PERCENT=5
+SSH_PORTS=22
+```
+
+Если поменяешь `CHECK_INTERVAL_SECONDS`, заново выполни:
+
+```bash
+sudo ./install_vm_auto_poweroff.sh
+```
+
+Так installer пересоздаст timer с новым интервалом.
+
+Если хочешь проверить поведение без выключения VM:
+
+```bash
+DRY_RUN=1 /usr/local/sbin/vm-auto-poweroff
+```
+
+В dry-run режиме скрипт пишет, что он сделал бы, но не вызывает `systemctl poweroff`.
+
+---
+
+## 6. Управление systemd timer
+
+Проверить статус:
+
+```bash
+systemctl status vm-auto-poweroff.timer
+```
+
+Посмотреть последние проверки:
+
+```bash
+journalctl -u vm-auto-poweroff.service -n 100 --no-pager
+```
+
+Запустить проверку вручную:
+
+```bash
+sudo systemctl start vm-auto-poweroff.service
+```
+
+Отключить авто-выключение:
+
+```bash
+sudo systemctl disable --now vm-auto-poweroff.timer
+```
+
+---
+
+## 7. VS Code: как открыть проект на сервере
 
 На Mac в VS Code поставь расширения:
 
@@ -186,22 +222,22 @@ python serveroid_vm.py poweroff
 2. открой папку проекта на сервере
 3. выполни `Dev Containers: Reopen in Container`
 
-Так VS Code будет работать **не локально**, а против окружения на удалённой VM.
+Так VS Code будет работать не локально, а против окружения на удаленной VM.
 
 ---
 
-## 5. Codex app: как направить его на сервер
+## 8. Codex app: как направить его на сервер
 
 Схема такая:
 
 1. на VM должен работать `codex`
-2. в Codex app открываешь `Settings -> Connections`
-3. добавляешь SSH-host
-4. выбираешь папку проекта на сервере
+2. в Codex app открой `Settings -> Connections`
+3. добавь SSH-host
+4. выбери папку проекта на сервере
 
 После этого Codex app будет читать файлы и выполнять команды на VM.
 
-Если remote connections ещё не видны, можно добавить в `~/.codex/config.toml`:
+Если remote connections еще не видны, можно добавить в `~/.codex/config.toml`:
 
 ```toml
 remote_control = true
@@ -209,7 +245,7 @@ remote_control = true
 
 ---
 
-## 6. Рекомендуемая структура проекта на VM
+## 9. Рекомендуемая структура проекта на VM
 
 Например:
 
@@ -224,17 +260,17 @@ remote_control = true
 
 ---
 
-## 7. Что добавить в репозиторий проекта
+## 10. Что добавить в репозиторий Rails-проекта
 
-Для удобной работы советую добавить в проект:
+Для удобной работы советую добавить в сам Rails-проект:
 
 - `compose.yaml`
 - `Dockerfile.dev`
 - `.devcontainer/devcontainer.json`
 - `AGENTS.md`
-- `Makefile`
+- `Makefile` с командами приложения, если он нужен именно проекту
 
-### Пример `AGENTS.md`
+Пример `AGENTS.md`:
 
 ```md
 # AGENTS.md
@@ -253,7 +289,7 @@ remote_control = true
 
 ---
 
-## 8. Локальный SSH config
+## 11. Локальный SSH config
 
 На Mac удобно завести запись в `~/.ssh/config`:
 
@@ -275,123 +311,46 @@ ssh rails-vm
 
 ---
 
-## 9. Makefile shortcuts
-
-Если используешь приложенный `Makefile`, команды будут такие:
-
-```bash
-make install
-make list
-make info
-make status
-make start
-make stop
-make poweroff
-```
-
----
-
-## 10. Что хранить в `.env`
-
-Пример:
-
-```env
-SERVEROID_CLIENT_ID=your_client_id
-SERVEROID_API_KEY=your_api_key
-SERVEROID_TENANT_ID=12345
-SERVEROID_VM_ID=67890
-```
-
-Если хочешь выбирать VM по имени:
-
-```env
-SERVEROID_VM_NAME=dev-rails
-```
-
-Но надёжнее использовать именно `VM_ID`.
-
----
-
-## 11. Безопасность
+## 12. Безопасность
 
 Не коммить:
 
-- `.env`
-- API key
-- `~/.codex/auth.json`
 - приватные SSH-ключи
-
-Если используешь git в этой папке, `.gitignore` из комплекта это уже прикрывает.
+- `~/.codex/auth.json`
+- токены и credentials проектов
+- локальные `.env` файлы приложений
 
 ---
 
-## 12. Частые команды
+## 13. Troubleshooting
+
+### VM не выключается
+
+Проверь, что timer включен:
 
 ```bash
-# Поднять VM
-python serveroid_vm.py start
-
-# Проверить состояние
-python serveroid_vm.py status
-
-# Посмотреть список VM
-python serveroid_vm.py list
-
-# Получить подробности по текущей VM
-python serveroid_vm.py info
-
-# Остановить VM мягко
-python serveroid_vm.py stop
-
-# Жёстко выключить
-python serveroid_vm.py poweroff
+systemctl status vm-auto-poweroff.timer
 ```
 
-Если используешь `Makefile`:
+Посмотри причину последнего решения:
 
 ```bash
-make start
-make status
-make stop
+journalctl -u vm-auto-poweroff.service -n 100 --no-pager
 ```
 
----
+Чаще всего VM не выключается, потому что есть активное SSH-подключение, высокая CPU/Docker-нагрузка или процесс из `BUSY_PROCESS_REGEX`.
 
-## 13. Рекомендуемый минимальный workflow
+### Нужно проверить без риска выключения
 
-1. `make start`
-2. открываешь VS Code через Remote-SSH
-3. работаешь в проекте на VM
-4. при необходимости используешь Codex app Remote connections
-5. вечером `make stop`
-
----
-
-## 14. Troubleshooting
-
-### `Serveroid error: SERVEROID_CLIENT_ID and SERVEROID_API_KEY are required`
-
-Не подгрузился `.env` или переменные не экспортированы.
-
-Решение:
-
-- проверь файл `.env`
-- либо экспортируй переменные вручную
-
-### `VM with name ... not found`
-
-Имя VM не совпадает с именем в панели.
-
-Решение:
-
-- сначала выполни `python serveroid_vm.py list`
-- лучше используй `SERVEROID_VM_ID`
+```bash
+DRY_RUN=1 /usr/local/sbin/vm-auto-poweroff
+```
 
 ### `codex --version` не работает на сервере
 
 Значит `bootstrap.sh` не завершил установку или `codex` не попал в `PATH`.
 
-### VS Code открыл локальную папку вместо удалённой
+### VS Code открыл локальную папку вместо удаленной
 
 Ты открыл обычное окно VS Code, а не Remote-SSH-сессию.
 
@@ -403,33 +362,21 @@ make stop
 
 ---
 
-## 15. Что можно улучшить потом
-
-Дальше можно спокойно дорастить систему:
-
-- добавить `.env`-подгрузку прямо в `serveroid_vm.py`
-- завернуть CLI в пакет с `pyproject.toml`
-- сделать команду `workon`, которая автоматически запускает VM
-- добавить уведомления в Telegram/Slack
-- добавить `compose.yaml` и `.devcontainer` шаблоны под Rails
-
----
-
-## 16. Минимальный набор файлов рядом со скриптами
+## 14. Минимальный набор файлов
 
 ```text
 bootstrap.sh
-serveroid_vm.py
+install_vm_auto_poweroff.sh
+vm_auto_poweroff.sh
+vm-auto-poweroff.service
+vm-auto-poweroff.timer
 README.md
-requirements.txt
-.env.example
 .gitignore
-Makefile
 ```
 
 Этого достаточно, чтобы:
 
-- один раз поднять и подготовить VM
-- потом запускать и останавливать её одной командой
+- один раз подготовить Ubuntu VM
+- запускать VM вручную через web UI любого хостинга
 - работать на ней из VS Code и Codex app
-
+- автоматически выключать ее после простоя без provider-specific API

@@ -1,0 +1,9 @@
+[Unit]
+Description=Check VM idleness and power off when idle
+Wants=network-online.target
+After=network-online.target ssh.service sshd.service docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/vm-auto-poweroff
+ExecStart=/bin/bash /usr/local/sbin/vm-auto-poweroff

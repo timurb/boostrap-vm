@@ -1,0 +1,12 @@
+[Unit]
+Description=Run VM auto poweroff check every 5 minutes
+
+[Timer]
+OnBootSec=300s
+OnUnitActiveSec=300s
+AccuracySec=30s
+Unit=vm-auto-poweroff.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target
