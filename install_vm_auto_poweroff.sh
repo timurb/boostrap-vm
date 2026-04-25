@@ -63,6 +63,10 @@ DOCKER_BUSY_PERCENT=5
 
 # SSH ports that count established inbound connections as activity.
 SSH_PORTS=22
+
+# Regex for long-lived client bridge processes that should not block poweroff.
+# Leave unset to use script defaults, which ignore Codex app-server.
+# IGNORED_PROCESS_REGEX='(^|[[:space:]/])codex[[:space:]]+app-server([[:space:]]|$)'
 EOF
 }
 
