@@ -66,7 +66,6 @@ install_base_packages() {
     fzf \
     bat \
     vim \
-    nano \
     rsync \
     openssh-client \
     openssh-server \
