@@ -13,7 +13,7 @@ CPU_SAMPLE_SECONDS="${CPU_SAMPLE_SECONDS:-2}"
 DRY_RUN="${DRY_RUN:-0}"
 SSH_PORTS="${SSH_PORTS:-22}"
 BUSY_PROCESS_REGEX="${BUSY_PROCESS_REGEX:-apt(-get)?|aptitude|dpkg|unattended-upgrade|snap[[:space:]]|docker[[:space:]]+(build|compose)|docker-compose|buildkit|make|ninja|cmake|gcc|g[+][+]|clang|rustc|cargo|go[[:space:]]+(build|test|run)|npm|yarn|pnpm|bun|bundle([[:space:]]+install|[[:space:]]+exec)?|rails|rake|rspec|pytest|jest|vitest|playwright|cypress|mvn|gradle|pip3?|poetry}"
-IGNORED_PROCESS_REGEX="${IGNORED_PROCESS_REGEX:-(^|[[:space:]/])codex[[:space:]]+app-server([[:space:]]|$)}"
+IGNORED_PROCESS_REGEX="${IGNORED_PROCESS_REGEX:-grep|(^|[[:space:]/])codex[[:space:]]+app-server([[:space:]]|$)}"
 
 log() {
   printf '%s %s\n' "$(date -Is)" "$*"
