@@ -329,6 +329,17 @@ If you use Codex app remote connections later, make sure:
 EOF
 }
 
+install_amnezia_wg() {
+  sudo apt update
+  sudo apt install -y software-properties-common curl ca-certificates gnupg lsb-release linux-headers-$(uname -r)
+  sudo add-apt-repository -y ppa:amnezia/ppa
+  sudo apt update
+  sudo apt install -y amneziawg amneziawg-tools
+  sudo mkdir -p /etc/amnezia/amneziawg
+  sudo systemctl enable awg-quick@awg0
+  echo "Place your Amnezia config to /etc/amnezia/amneziawg/awg0.conf"
+}
+
 main() {
   require_root
   install_base_packages
@@ -341,6 +352,7 @@ main() {
   configure_ssh_and_firewall
   prepare_workspace
   install_mise
+  install_amnezia_wg
   print_versions
   print_next_steps
 }
