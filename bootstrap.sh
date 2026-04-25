@@ -242,7 +242,6 @@ configure_ssh_and_firewall() {
   log "Configuring SSH and firewall"
 
   sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
-  sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
   sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
   grep -q '^ClientAliveInterval' /etc/ssh/sshd_config || echo 'ClientAliveInterval 60' >> /etc/ssh/sshd_config
   grep -q '^ClientAliveCountMax' /etc/ssh/sshd_config || echo 'ClientAliveCountMax 3' >> /etc/ssh/sshd_config
@@ -331,7 +330,7 @@ EOF
 
 install_amnezia_wg() {
   sudo apt update
-  sudo apt install -y software-properties-common curl ca-certificates gnupg lsb-release linux-headers-$(uname -r)
+  sudo apt install -y software-properties-common curl ca-certificates gnupg lsb-release linux-headers-$(uname -r) systemd-resolved
   sudo add-apt-repository -y ppa:amnezia/ppa
   sudo apt update
   sudo apt install -y amneziawg amneziawg-tools
