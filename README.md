@@ -167,6 +167,14 @@ DOCKER_BUSY_PERCENT=5
 # IGNORED_PROCESS_REGEX='(^|[[:space:]/])codex[[:space:]]+app-server([[:space:]]|$)|ruby[-_]lsp|ruby_lsp_rails|ruby-lsp-rails'
 ```
 
+### Временная пауза авто-выключения
+
+Если VM нужно гарантированно не выключать какое-то время, поставь hold на нужное количество минут:
+
+```bash
+sudo /usr/local/sbin/vm-auto-poweroff hold 120
+```
+
 Если поменяешь `CHECK_INTERVAL_SECONDS`, заново выполни:
 
 ```bash
@@ -354,7 +362,7 @@ systemctl status vm-auto-poweroff.timer
 journalctl -u vm-auto-poweroff.service -n 100 --no-pager
 ```
 
-Чаще всего VM не выключается, потому что есть свежая SSH login-сессия, высокая CPU/Docker-нагрузка или процесс из `BUSY_PROCESS_REGEX`.
+Чаще всего VM не выключается, потому что есть активный hold, свежая SSH login-сессия, высокая CPU/Docker-нагрузка или процесс из `BUSY_PROCESS_REGEX`.
 `codex app-server` и `ruby-lsp-rails` по умолчанию игнорируются; если они все равно появляются в причине, проверь кастомный `IGNORED_PROCESS_REGEX` в `/etc/default/vm-auto-poweroff`.
 
 ### Нужно проверить без риска выключения

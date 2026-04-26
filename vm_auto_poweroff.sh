@@ -5,6 +5,7 @@ PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 STATE_DIR="${STATE_DIR:-/var/lib/vm-auto-poweroff}"
 LAST_BUSY_FILE="${LAST_BUSY_FILE:-${STATE_DIR}/last_busy}"
+POWER_OFF_HOLD_UNTIL_FILE="${POWER_OFF_HOLD_UNTIL_FILE:-${STATE_DIR}/poweroff_hold_until}"
 
 IDLE_MINUTES="${IDLE_MINUTES:-30}"
 SSH_SESSION_IDLE_MINUTES="${SSH_SESSION_IDLE_MINUTES:-${IDLE_MINUTES}}"
@@ -22,6 +23,13 @@ log() {
 die() {
   log "error: $*"
   exit 1
+}
+
+usage() {
+  cat <<'EOF'
+usage:
+  vm-auto-poweroff hold MINUTES
+EOF
 }
 
 is_true() {
@@ -94,6 +102,78 @@ read_last_busy() {
   fi
 
   printf '%s\n' "$value"
+}
+
+write_poweroff_hold_until() {
+  local timestamp="$1"
+
+  ensure_state_dir
+
+  if { printf '%s\n' "$timestamp" > "$POWER_OFF_HOLD_UNTIL_FILE"; } 2>/dev/null; then
+    return 0
+  fi
+
+  if is_true "$DRY_RUN"; then
+    log "dry-run: would record poweroff hold timestamp ${timestamp} in ${POWER_OFF_HOLD_UNTIL_FILE}"
+    return 0
+  fi
+
+  die "cannot write ${POWER_OFF_HOLD_UNTIL_FILE}"
+}
+
+read_poweroff_hold_until() {
+  local value=""
+
+  if [[ -r "$POWER_OFF_HOLD_UNTIL_FILE" ]]; then
+    value="$(tr -cd '0-9' < "$POWER_OFF_HOLD_UNTIL_FILE" | head -c 20)"
+  fi
+
+  printf '%s\n' "$value"
+}
+
+format_timestamp() {
+  local timestamp="$1"
+
+  date -d "@${timestamp}" -Is 2>/dev/null || printf '%s' "$timestamp"
+}
+
+poweroff_hold_summary() {
+  local now="$1"
+  local hold_until remaining_seconds remaining_minutes
+
+  hold_until="$(read_poweroff_hold_until)"
+  if [[ -z "$hold_until" ]]; then
+    return 0
+  fi
+
+  if (( hold_until <= now )); then
+    rm -f "$POWER_OFF_HOLD_UNTIL_FILE" 2>/dev/null || true
+    return 0
+  fi
+
+  remaining_seconds=$(( hold_until - now ))
+  remaining_minutes=$(( (remaining_seconds + 59) / 60 ))
+  printf 'active until %s (%s minute(s) remaining)' "$(format_timestamp "$hold_until")" "$remaining_minutes"
+}
+
+set_poweroff_hold() {
+  if (( $# != 1 )); then
+    usage >&2
+    exit 2
+  fi
+
+  local hold_minutes="$1"
+  local hold_until now
+
+  require_non_negative_int "MINUTES" "$hold_minutes"
+  if (( hold_minutes == 0 )); then
+    die "MINUTES must be greater than 0"
+  fi
+
+  now="$(date +%s)"
+  hold_until=$(( now + hold_minutes * 60 ))
+  write_poweroff_hold_until "$hold_until"
+  log "poweroff hold set for ${hold_minutes} minute(s), until $(format_timestamp "$hold_until")"
 }
 
 recent_ssh_login_sessions_summary() {
@@ -202,41 +282,57 @@ poweroff_vm() {
   systemctl poweroff
 }
 
-main() {
+run_check() {
   validate_config
 
   local now
   now="$(date +%s)"
 
-  local -a reasons=()
-  local ssh_sessions cpu docker_cpu processes
+  local -a activity_reasons=()
+  local -a log_reasons=()
+  local hold_summary ssh_sessions cpu docker_cpu processes
+
+  hold_summary="$(poweroff_hold_summary "$now")"
+  if [[ -n "$hold_summary" ]]; then
+    log_reasons+=("poweroff hold ${hold_summary}")
+  fi
 
   ssh_sessions="$(recent_ssh_login_sessions_summary)"
   if [[ -n "$ssh_sessions" ]]; then
-    reasons+=("active SSH login sessions: ${ssh_sessions//$'\n'/; }")
+    activity_reasons+=("active SSH login sessions: ${ssh_sessions//$'\n'/; }")
   fi
 
   cpu="$(cpu_usage_percent)"
   if (( cpu >= CPU_BUSY_PERCENT )); then
-    reasons+=("cpu ${cpu}% >= ${CPU_BUSY_PERCENT}%")
+    activity_reasons+=("cpu ${cpu}% >= ${CPU_BUSY_PERCENT}%")
   fi
 
   docker_cpu="$(docker_cpu_percent)"
   if (( docker_cpu >= DOCKER_BUSY_PERCENT )); then
-    reasons+=("docker cpu ${docker_cpu}% >= ${DOCKER_BUSY_PERCENT}%")
+    activity_reasons+=("docker cpu ${docker_cpu}% >= ${DOCKER_BUSY_PERCENT}%")
   fi
 
   processes="$(busy_process_summary)"
   if [[ -n "$processes" ]]; then
-    reasons+=("busy processes: ${processes//$'\n'/; }")
+    activity_reasons+=("busy processes: ${processes//$'\n'/; }")
   fi
 
-  if (( ${#reasons[@]} > 0 )); then
+  if (( ${#activity_reasons[@]} > 0 )); then
+    log_reasons+=("${activity_reasons[@]}")
+  fi
+
+  if (( ${#log_reasons[@]} > 0 )); then
     local reason_text
-    printf -v reason_text '%s; ' "${reasons[@]}"
+    printf -v reason_text '%s; ' "${log_reasons[@]}"
     reason_text="${reason_text%; }"
-    write_last_busy "$now"
-    log "busy: ${reason_text}"
+
+    if (( ${#activity_reasons[@]} > 0 )); then
+      write_last_busy "$now"
+      log "busy: ${reason_text}"
+      return 0
+    fi
+
+    log "hold: ${reason_text}"
     return 0
   fi
 
@@ -266,6 +362,24 @@ main() {
 
   log "idle: ${idle_minutes} minute(s), threshold is ${IDLE_MINUTES} minute(s)"
   poweroff_vm
+}
+
+main() {
+  if (( $# == 0 )); then
+    run_check
+    return 0
+  fi
+
+  case "$1" in
+    hold)
+      shift
+      set_poweroff_hold "$@"
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
