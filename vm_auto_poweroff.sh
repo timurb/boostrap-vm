@@ -7,13 +7,13 @@ STATE_DIR="${STATE_DIR:-/var/lib/vm-auto-poweroff}"
 LAST_BUSY_FILE="${LAST_BUSY_FILE:-${STATE_DIR}/last_busy}"
 
 IDLE_MINUTES="${IDLE_MINUTES:-30}"
+SSH_SESSION_IDLE_MINUTES="${SSH_SESSION_IDLE_MINUTES:-${IDLE_MINUTES}}"
 CPU_BUSY_PERCENT="${CPU_BUSY_PERCENT:-20}"
 DOCKER_BUSY_PERCENT="${DOCKER_BUSY_PERCENT:-5}"
 CPU_SAMPLE_SECONDS="${CPU_SAMPLE_SECONDS:-2}"
 DRY_RUN="${DRY_RUN:-0}"
-SSH_PORTS="${SSH_PORTS:-22}"
-BUSY_PROCESS_REGEX="${BUSY_PROCESS_REGEX:-apt(-get)?|aptitude|dpkg|unattended-upgrade|snap[[:space:]]|docker[[:space:]]+(build|compose)|docker-compose|buildkit|make|ninja|cmake|gcc|g[+][+]|clang|rustc|cargo|go[[:space:]]+(build|test|run)|npm|yarn|pnpm|bun|bundle([[:space:]]+install|[[:space:]]+exec)?|rails|rake|rspec|pytest|jest|vitest|playwright|cypress|mvn|gradle|pip3?|poetry}"
-IGNORED_PROCESS_REGEX="${IGNORED_PROCESS_REGEX:-grep|(^|[[:space:]/])codex[[:space:]]+app-server([[:space:]]|$)}"
+BUSY_PROCESS_REGEX="${BUSY_PROCESS_REGEX:-apt(-get)?|aptitude|dpkg|unattended-upgrade|snap[[:space:]]|docker[[:space:]]+(build|compose)|docker-compose|buildkit|make|ninja|cmake|gcc|g[+][+]|clang|rustc|cargo|go[[:space:]]+(build|test|run)|npm|yarn|pnpm|bun|bundle([[:space:]]+install|[[:space:]]+exec)?|(^|[[:space:]/])(rails|rake|rspec|pytest|jest|vitest|playwright|cypress|mvn|gradle|pip3?|poetry)([[:space:]]|$)}"
+IGNORED_PROCESS_REGEX="${IGNORED_PROCESS_REGEX:-grep|(^|[[:space:]/])codex[[:space:]]+app-server([[:space:]]|$)|ruby[-_]lsp|ruby_lsp_rails|ruby-lsp-rails}"
 
 log() {
   printf '%s %s\n' "$(date -Is)" "$*"
@@ -42,12 +42,17 @@ require_non_negative_int() {
 
 validate_config() {
   require_non_negative_int "IDLE_MINUTES" "$IDLE_MINUTES"
+  require_non_negative_int "SSH_SESSION_IDLE_MINUTES" "$SSH_SESSION_IDLE_MINUTES"
   require_non_negative_int "CPU_BUSY_PERCENT" "$CPU_BUSY_PERCENT"
   require_non_negative_int "DOCKER_BUSY_PERCENT" "$DOCKER_BUSY_PERCENT"
   require_non_negative_int "CPU_SAMPLE_SECONDS" "$CPU_SAMPLE_SECONDS"
 
   if (( IDLE_MINUTES == 0 )); then
     die "IDLE_MINUTES must be greater than 0"
+  fi
+
+  if (( SSH_SESSION_IDLE_MINUTES == 0 )); then
+    die "SSH_SESSION_IDLE_MINUTES must be greater than 0"
   fi
 }
 
@@ -91,37 +96,58 @@ read_last_busy() {
   printf '%s\n' "$value"
 }
 
-active_sessions_summary() {
-  local output=""
-  local who_lines=""
-  local ssh_lines=""
+recent_vscode_sessions_summary() {
+  local now storage_dir
+  now="$(date +%s)"
 
-  if command -v who >/dev/null 2>&1; then
-    who_lines="$(who -u 2>/dev/null | awk '{print $1 " " $2 " " $3 " " $4}' || true)"
-    if [[ -n "$who_lines" ]]; then
-      output+="login sessions: ${who_lines//$'\n'/; }"$'\n'
-    fi
-  fi
+  for storage_dir in /home/*/.vscode-server*/data/User/workspaceStorage /root/.vscode-server*/data/User/workspaceStorage; do
+    [[ -d "$storage_dir" ]] || continue
+    find "$storage_dir" -mindepth 2 -maxdepth 2 -type f -name vscode.lock -printf '%T@ %p\n' 2>/dev/null
+  done \
+    | awk -v now="$now" -v max_minutes="$IDLE_MINUTES" '
+        {
+          mtime = int($1)
+          $1 = ""
+          sub(/^[[:space:]]+/, "")
+          age_seconds = now - mtime
+          if (age_seconds < max_minutes * 60) {
+            print $0 " updated " int(age_seconds / 60) " minute(s) ago"
+          }
+        }
+      ' \
+    | head -n 10 || true
+}
 
-  if command -v ss >/dev/null 2>&1; then
-    local port
-    for port in ${SSH_PORTS//,/ }; do
-      [[ "$port" =~ ^[0-9]+$ ]] || continue
-      local port_lines=""
-      port_lines="$(ss -Htn state established "( sport = :${port} )" 2>/dev/null \
-        | awk -v port="$port" '{print "port " port " " $4 " <- " $5}' || true)"
+recent_ssh_login_sessions_summary() {
+  who -u 2>/dev/null | awk -v max_minutes="$SSH_SESSION_IDLE_MINUTES" '
+    function idle_minutes(value, parts) {
+      if (value == "." || value == "00:00") {
+        return 0
+      }
 
-      if [[ -n "$port_lines" ]]; then
-        ssh_lines+="$port_lines"$'\n'
-      fi
-    done
+      if (value == "old") {
+        return max_minutes + 1
+      }
 
-    if [[ -n "$ssh_lines" ]]; then
-      output+="ssh connections: ${ssh_lines//$'\n'/; }"$'\n'
-    fi
-  fi
+      if (value ~ /^[0-9]+:[0-9][0-9]$/) {
+        split(value, parts, ":")
+        return parts[1] * 60 + parts[2]
+      }
 
-  printf '%s' "$output"
+      if (value ~ /^[0-9]+$/) {
+        return value
+      }
+
+      return 0
+    }
+
+    $2 ~ /^pts\// {
+      idle = idle_minutes($5)
+      if (idle < max_minutes) {
+        print $1 " " $2 " " $3 " " $4 " idle " $5
+      }
+    }
+  ' || true
 }
 
 read_cpu_times() {
@@ -205,11 +231,16 @@ main() {
   now="$(date +%s)"
 
   local -a reasons=()
-  local sessions cpu docker_cpu processes
+  local vscode_sessions ssh_sessions cpu docker_cpu processes
 
-  sessions="$(active_sessions_summary)"
-  if [[ -n "$sessions" ]]; then
-    reasons+=("active sessions: ${sessions//$'\n'/ }")
+  vscode_sessions="$(recent_vscode_sessions_summary)"
+  if [[ -n "$vscode_sessions" ]]; then
+    reasons+=("active VS Code sessions: ${vscode_sessions//$'\n'/; }")
+  fi
+
+  ssh_sessions="$(recent_ssh_login_sessions_summary)"
+  if [[ -n "$ssh_sessions" ]]; then
+    reasons+=("active SSH login sessions: ${ssh_sessions//$'\n'/; }")
   fi
 
   cpu="$(cpu_usage_percent)"

@@ -48,6 +48,9 @@ write_default_config() {
 # Minutes without detected activity before local VM poweroff.
 IDLE_MINUTES=30
 
+# Personal SSH login sessions with TTY idle time below this value block poweroff.
+SSH_SESSION_IDLE_MINUTES=30
+
 # Installer uses this value to generate the systemd timer interval.
 # Rerun sudo ./install_vm_auto_poweroff.sh after changing it.
 CHECK_INTERVAL_SECONDS=300
@@ -61,12 +64,9 @@ CPU_BUSY_PERCENT=20
 # Sum of Docker container CPU percentages that blocks poweroff.
 DOCKER_BUSY_PERCENT=5
 
-# SSH ports that count established inbound connections as activity.
-SSH_PORTS=22
-
-# Regex for long-lived client bridge processes that should not block poweroff.
-# Leave unset to use script defaults, which ignore Codex app-server.
-# IGNORED_PROCESS_REGEX='(^|[[:space:]/])codex[[:space:]]+app-server([[:space:]]|$)'
+# Regex for long-lived client bridge/LSP processes that should not block
+# poweroff. Leave unset to use script defaults.
+# IGNORED_PROCESS_REGEX='(^|[[:space:]/])codex[[:space:]]+app-server([[:space:]]|$)|ruby[-_]lsp|ruby_lsp_rails|ruby-lsp-rails'
 EOF
 }
 

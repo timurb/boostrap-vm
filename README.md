@@ -112,14 +112,16 @@ Installer:
 
 VM считается занятой, если есть хотя бы один из сигналов:
 
-- активная login/SSH-сессия
-- живое SSH-подключение на порт из `SSH_PORTS` с точки зрения `ss`
+- свежая VS Code Remote-SSH workspace-сессия: lock-файл `~/.vscode-server/data/User/workspaceStorage/*/vscode.lock` обновлялся меньше `IDLE_MINUTES` минут назад
+- личная интерактивная SSH login-сессия, у которой TTY idle меньше `SSH_SESSION_IDLE_MINUTES`
 - CPU VM выше `CPU_BUSY_PERCENT`
 - суммарная Docker CPU-нагрузка выше `DOCKER_BUSY_PERCENT`
 - найден активный build/package/process из `BUSY_PROCESS_REGEX`
 
 Перед проверкой `BUSY_PROCESS_REGEX` скрипт отбрасывает процессы из `IGNORED_PROCESS_REGEX`.
-По умолчанию туда входит `codex app-server`, потому что после закрытия Codex app или VS Code он может оставаться фоновым bridge-процессом и сам по себе не означает активную работу.
+По умолчанию туда входят `codex app-server` и Ruby LSP процессы вроде `ruby-lsp-rails`, потому что после закрытия Codex app или VS Code они могут оставаться фоновыми bridge/LSP-процессами и сами по себе не означают активную работу.
+
+Raw SSH-сокеты не считаются активностью. Это важно для Mac: macOS может оставлять TCP-сессию SSH established во сне.
 
 Если VM занята, скрипт обновляет timestamp в:
 
@@ -147,13 +149,13 @@ systemctl poweroff
 
 ```bash
 IDLE_MINUTES=30
+SSH_SESSION_IDLE_MINUTES=30
 CHECK_INTERVAL_SECONDS=300
 DRY_RUN=0
 CPU_BUSY_PERCENT=20
 DOCKER_BUSY_PERCENT=5
-SSH_PORTS=22
-# Unset by default in /etc/default; script default ignores codex app-server.
-# IGNORED_PROCESS_REGEX='(^|[[:space:]/])codex[[:space:]]+app-server([[:space:]]|$)'
+# Unset by default in /etc/default; script default ignores codex app-server and Ruby LSP.
+# IGNORED_PROCESS_REGEX='(^|[[:space:]/])codex[[:space:]]+app-server([[:space:]]|$)|ruby[-_]lsp|ruby_lsp_rails|ruby-lsp-rails'
 ```
 
 Если поменяешь `CHECK_INTERVAL_SECONDS`, заново выполни:
@@ -343,8 +345,8 @@ systemctl status vm-auto-poweroff.timer
 journalctl -u vm-auto-poweroff.service -n 100 --no-pager
 ```
 
-Чаще всего VM не выключается, потому что есть активное SSH-подключение, высокая CPU/Docker-нагрузка или процесс из `BUSY_PROCESS_REGEX`.
-`codex app-server` по умолчанию игнорируется; если он все равно появляется в причине, проверь кастомный `IGNORED_PROCESS_REGEX` в `/etc/default/vm-auto-poweroff`.
+Чаще всего VM не выключается, потому что есть свежая VS Code Remote-SSH workspace-сессия, свежая SSH login-сессия, высокая CPU/Docker-нагрузка или процесс из `BUSY_PROCESS_REGEX`.
+`codex app-server` и `ruby-lsp-rails` по умолчанию игнорируются; если они все равно появляются в причине, проверь кастомный `IGNORED_PROCESS_REGEX` в `/etc/default/vm-auto-poweroff`.
 
 ### Нужно проверить без риска выключения
 
