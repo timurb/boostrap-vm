@@ -96,28 +96,6 @@ read_last_busy() {
   printf '%s\n' "$value"
 }
 
-recent_vscode_sessions_summary() {
-  local now storage_dir
-  now="$(date +%s)"
-
-  for storage_dir in /home/*/.vscode-server*/data/User/workspaceStorage /root/.vscode-server*/data/User/workspaceStorage; do
-    [[ -d "$storage_dir" ]] || continue
-    find "$storage_dir" -mindepth 2 -maxdepth 2 -type f -name vscode.lock -printf '%T@ %p\n' 2>/dev/null
-  done \
-    | awk -v now="$now" -v max_minutes="$IDLE_MINUTES" '
-        {
-          mtime = int($1)
-          $1 = ""
-          sub(/^[[:space:]]+/, "")
-          age_seconds = now - mtime
-          if (age_seconds < max_minutes * 60) {
-            print $0 " updated " int(age_seconds / 60) " minute(s) ago"
-          }
-        }
-      ' \
-    | head -n 10 || true
-}
-
 recent_ssh_login_sessions_summary() {
   who -u 2>/dev/null | awk -v max_minutes="$SSH_SESSION_IDLE_MINUTES" '
     function idle_minutes(value, parts) {
@@ -231,12 +209,7 @@ main() {
   now="$(date +%s)"
 
   local -a reasons=()
-  local vscode_sessions ssh_sessions cpu docker_cpu processes
-
-  vscode_sessions="$(recent_vscode_sessions_summary)"
-  if [[ -n "$vscode_sessions" ]]; then
-    reasons+=("active VS Code sessions: ${vscode_sessions//$'\n'/; }")
-  fi
+  local ssh_sessions cpu docker_cpu processes
 
   ssh_sessions="$(recent_ssh_login_sessions_summary)"
   if [[ -n "$ssh_sessions" ]]; then
